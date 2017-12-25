@@ -68,7 +68,7 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 		double theta = particles[i].theta;
 
 		// Predict by motion models
-		if(!yaw_rate) {
+		if(yaw_rate) {
 			double theta_f = theta + yaw_rate * delta_t;
 			particles[i].x = x + velocity / yaw_rate * ( sin(theta_f) - sin(theta) ) + dist_x(gen);
 			particles[i].y = y + velocity / yaw_rate * ( cos(theta) - cos(theta_f) ) + dist_y(gen);
@@ -88,6 +88,25 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
 	// NOTE: this method will NOT be called by the grading code. But you will probably find it useful to 
 	//   implement this method and use it as a helper during the updateWeights phase.
 
+	for(int n = 0; n < observations.size(); ++n) {
+		double x1 = observations[n].x;
+		double y1 = observations[n].y;
+		double dist_min = 500;
+		int id_min = 0;
+
+		for(int m = 0; m < predicted.size(); ++m) {
+			double x2 = predicted[m].x;
+			double y2 = predicted[m].y;
+			double dist_pred = dist(x1, y1, x2, y2);
+
+			if(dist_min > dist_pred) {
+				dist_min = dist_pred;
+				id_min = predicted[m].id;
+			}
+		}
+
+		observations[n].id = id_min;
+	}
 }
 
 void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], 
@@ -102,6 +121,81 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	//   and the following is a good resource for the actual equation to implement (look at equation 
 	//   3.33
 	//   http://planning.cs.uiuc.edu/node99.html
+	double k_std_xy = 1 / (2 * M_PI * std_landmark[0] * std_landmark[1]);
+	double k_std_xx = 1 / (2 * std_landmark[0] * std_landmark[0]);
+	double k_std_yy = 1 / (2 * std_landmark[1] * std_landmark[1]);
+
+	// Copy map to predicted landmarks
+	std::vector<LandmarkObs> predicted;
+
+	for(int m = 0; m < map_landmarks.landmark_list.size(); ++m) {
+		LandmarkObs obs_map;
+
+		obs_map.x  = map_landmarks.landmark_list[m].x_f;
+		obs_map.y  = map_landmarks.landmark_list[m].y_f;
+		obs_map.id = map_landmarks.landmark_list[m].id_i;
+
+		predicted.push_back(obs_map);
+	}
+
+	// Transformation, data association, and weight update for each particle
+	double weight_sum = 0;
+	for(int i = 0; i < num_particles; ++i) {
+		// Transform landmark observations from the car coordinate to the map coordinate
+		std::vector<LandmarkObs> observations_t;
+		double xp = particles[i].x;
+		double yp = particles[i].y;
+		double theta = particles[i].theta;
+
+		for(int n = 0; n < observations.size(); ++n) {
+			LandmarkObs obs_t;
+			double xc = observations[n].x;
+			double yc = observations[n].y;
+
+			obs_t.x = cos(theta) * xc - sin(theta) * yc + xp;
+			obs_t.y = sin(theta) * xc + cos(theta) * yc + yp;
+
+			observations_t.push_back(obs_t);
+		}
+
+		// Associate transformed landmark observations to landmark IDs
+		dataAssociation(predicted, observations_t);
+
+		std::vector<int> associations;
+		std::vector<double> sense_x;
+		std::vector<double> sense_y;
+
+		for(int n = 0; n < observations_t.size(); ++n) {
+			associations.push_back(observations_t[n].id);
+			sense_x.push_back(observations_t[n].x);
+			sense_y.push_back(observations_t[n].y);
+		}
+
+	//	SetAssociations(particles[i], associations, sense_x, sense_y);
+		particles[i].associations = associations;
+		particles[i].sense_x = sense_x;
+		particles[i].sense_y = sense_y;
+
+		// Update weight
+		double prob = 1;
+		for(int n = 0; n < observations_t.size(); ++n) {
+			int index = associations[n] - 1; // landmark id = index + 1
+			double mu_x = map_landmarks.landmark_list[index].x_f;
+			double mu_y = map_landmarks.landmark_list[index].y_f;
+			double dx = sense_x[n] - mu_x;
+			double dy = sense_y[n] - mu_y;
+
+			prob *= k_std_xy * exp(-k_std_xx * dx * dx - k_std_yy * dy * dy);
+		}
+
+		particles[i].weight = prob;
+		weight_sum += prob;
+	}
+
+	// Normalize weight
+	for(int i = 0; i < num_particles; ++i) {
+		particles[i].weight *= 1.0/weight_sum;
+	}
 }
 
 void ParticleFilter::resample() {
